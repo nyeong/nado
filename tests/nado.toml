@@ -1,0 +1,39 @@
+# For A + B
+# URL: https://www.acmicpc.net/problem/1000
+
+[problem.inputs.a]
+type = "integer"
+min = 1
+max = 9
+
+[problem.inputs.b]
+type = "integer"
+min = 1
+max = 9
+
+[origin]
+cmd = ["python3", "/work/origin.py"]
+mounts = ["./origin.py:/work/origin.py:ro"]
+
+[[candidate]]
+name = "ruby-solution"
+cmd = ["ruby", "/work/solve.rb"]
+mounts = ["./solve.rb:/work/solve.rb:ro"]
+
+[engine]
+cases = 5000
+workers = 8
+seed = 42
+timeout_ms = 1000
+stop_on_first_fail = true
+
+[limits]
+cpu_seconds = 1
+memory_mb = 128
+file_size_kb = 64
+nofile = 64
+nproc = 32
+
+[normalize]
+trim_trailing_ws = true
+ignore_final_newline = true
