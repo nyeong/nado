@@ -9,10 +9,15 @@ Useful when you want to solve a problem in a language not supported by the judge
 ## MVP scope
 
 - Generate randomized inputs from `problem.inputs`
-- Run `origin` and all `candidate` programs locally
+- Run `origin` and all `candidate` programs locally by default
+- Run a program in Docker when `image` is set
 - Compare normalized stdout outputs
 - Fail fast with reproducible counterexample (`seed`)
-- Enforce timeout + `rlimit` per process (no Docker required)
+- Enforce timeout + `rlimit` per local process
+- Generate inputs with hybrid strategy:
+  - boundary seeds
+  - partition seeds
+  - proptest-based random samples
 
 ## Run
 
@@ -23,6 +28,11 @@ cargo run -- tests/e2e/backjoon-1000/nado.toml
 cd tests/e2e/backjoon-1000
 cargo run --manifest-path ../../../Cargo.toml
 ```
+
+APL docker candidate in `tests/e2e/backjoon-1000` uses:
+
+- image: `juergensauermann/gnu-apl:latest`
+- script: `solve.apl`
 
 ## Nix
 
@@ -46,6 +56,18 @@ nado ./nado.toml
 ## Config example
 
 See: `tests/e2e/backjoon-1000/nado.toml`
+
+### PBT options
+
+`[pbt]` is optional. Defaults are enabled and tuned for generic BOJ-style integer constraints.
+
+```toml
+[pbt]
+enabled = true
+edge_case_ratio = 0.25
+partition_ratio = 0.15
+max_cartesian_cases = 128
+```
 
 ## Planning docs
 

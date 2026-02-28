@@ -20,12 +20,25 @@ name = "ruby-solution"
 cmd = ["ruby", "/work/solve.rb"]
 mounts = ["./solve.rb:/work/solve.rb:ro"]
 
+[[candidate]]
+name = "apl-docker-solution"
+image = "juergensauermann/gnu-apl:latest"
+cmd = ["apl", "-s", "-f", "/work/solve.apl"]
+timeout_ms = 2000
+mounts = ["./solve.apl:/work/solve.apl:ro"]
+
 [engine]
-cases = 5000
+cases = 500
 workers = 8
 seed = 42
-timeout_ms = 1000
+timeout_ms = 500
 stop_on_first_fail = true
+
+[pbt]
+enabled = true
+edge_case_ratio = 0.25
+partition_ratio = 0.15
+max_cartesian_cases = 128
 
 [limits]
 cpu_seconds = 1

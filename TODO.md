@@ -8,6 +8,10 @@
 
 ## P0 - Blockers for More BOJ Coverage
 
+- [ ] Tier 1: deterministic boundary set (min/max/near-boundary/zero-sign pivots)
+- [ ] Tier 2: equivalence-partition representatives
+- [ ] Tier 3: randomized generation (proptest strategy sampling)
+- [ ] Tier 4: metamorphic checks (problem-specific invariants)
 - [ ] Input schema v2 for dependent shapes (`N` then `N` values, repeated testcases `T`)
 - [ ] String generators (uppercase/lowercase alphabet, digit strings, whitespace-preserving line)
 - [ ] Fixed-size integer vector generators (`count = 8`, `count = 9`)
