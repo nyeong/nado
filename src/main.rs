@@ -26,9 +26,8 @@ use wait_timeout::ChildExt;
     about = "Local differential tester for algorithm solutions"
 )]
 struct Cli {
-    /// Path to nado TOML config
-    #[arg(short, long, default_value = "tests/nado.toml")]
-    config: PathBuf,
+    /// Optional path to nado TOML config (defaults to ./nado.toml)
+    config: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -173,7 +172,7 @@ struct Failure {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let config_path = cli.config;
+    let config_path = resolve_config_path(cli.config)?;
     let config_dir = config_path
         .parent()
         .map(Path::to_path_buf)
@@ -213,7 +212,7 @@ fn main() -> Result<()> {
                 .par_iter()
                 .enumerate()
                 .find_map_any(|(idx, input)| {
-                    run_case(
+                    run_case_or_failure(
                         idx,
                         input,
                         &config,
@@ -222,18 +221,6 @@ fn main() -> Result<()> {
                         &config.limits,
                         config.engine.timeout_ms,
                     )
-                    .unwrap_or_else(|e| {
-                        Some(Failure {
-                            case_index: idx,
-                            input: input.clone(),
-                            candidate_name: "engine".to_string(),
-                            reason: format!("runner error: {e:#}"),
-                            origin_stdout: String::new(),
-                            candidate_stdout: String::new(),
-                            origin_stderr: String::new(),
-                            candidate_stderr: String::new(),
-                        })
-                    })
                 })
         });
 
@@ -251,7 +238,7 @@ fn main() -> Result<()> {
             .par_iter()
             .enumerate()
             .filter_map(|(idx, input)| {
-                run_case(
+                run_case_or_failure(
                     idx,
                     input,
                     &config,
@@ -260,18 +247,6 @@ fn main() -> Result<()> {
                     &config.limits,
                     config.engine.timeout_ms,
                 )
-                .unwrap_or_else(|e| {
-                    Some(Failure {
-                        case_index: idx,
-                        input: input.clone(),
-                        candidate_name: "engine".to_string(),
-                        reason: format!("runner error: {e:#}"),
-                        origin_stdout: String::new(),
-                        candidate_stdout: String::new(),
-                        origin_stderr: String::new(),
-                        candidate_stderr: String::new(),
-                    })
-                })
             })
             .collect::<Vec<_>>()
     });
@@ -285,6 +260,54 @@ fn main() -> Result<()> {
     println!("FAIL: {} mismatch(es)", failures.len());
     print_failure(&failures[0]);
     std::process::exit(1);
+}
+
+fn resolve_config_path(cli_config: Option<PathBuf>) -> Result<PathBuf> {
+    if let Some(config_path) = cli_config {
+        if !config_path.exists() {
+            bail!("config not found: {}", config_path.display());
+        }
+        return Ok(config_path);
+    }
+
+    let cwd = std::env::current_dir().context("failed to get current directory")?;
+    let config_path = cwd.join("nado.toml");
+    if config_path.exists() {
+        return Ok(config_path);
+    }
+
+    bail!(
+        "nado.toml not found in current directory: {}",
+        cwd.display()
+    );
+}
+
+fn run_case_or_failure(
+    idx: usize,
+    input: &str,
+    config: &Config,
+    config_dir: &Path,
+    normalize: &Normalize,
+    limits: &Limits,
+    timeout_ms: u64,
+) -> Option<Failure> {
+    run_case(
+        idx, input, config, config_dir, normalize, limits, timeout_ms,
+    )
+    .unwrap_or_else(|e| Some(engine_failure(idx, input, &e)))
+}
+
+fn engine_failure(idx: usize, input: &str, error: &anyhow::Error) -> Failure {
+    Failure {
+        case_index: idx,
+        input: input.to_string(),
+        candidate_name: "engine".to_string(),
+        reason: format!("runner error: {error:#}"),
+        origin_stdout: String::new(),
+        candidate_stdout: String::new(),
+        origin_stderr: String::new(),
+        candidate_stderr: String::new(),
+    }
 }
 
 fn parse_problem_inputs(problem: &Problem) -> Result<Vec<ParsedInput>> {

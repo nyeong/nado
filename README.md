@@ -17,7 +17,11 @@ Useful when you want to solve a problem in a language not supported by the judge
 ## Run
 
 ```bash
-cargo run -- --config tests/nado.toml
+cargo run -- tests/e2e/backjoon-1000/nado.toml
+
+# Or run inside a problem directory (auto-detect ./nado.toml)
+cd tests/e2e/backjoon-1000
+cargo run --manifest-path ../../../Cargo.toml
 ```
 
 ## Nix
@@ -25,16 +29,25 @@ cargo run -- --config tests/nado.toml
 ```bash
 nix develop
 cargo test
-cargo run -- --config tests/nado.toml
+cargo run -- tests/e2e/backjoon-1000/nado.toml
 
 # Build binary
 nix build
-./result/bin/nado --config tests/nado.toml
+./result/bin/nado tests/e2e/backjoon-1000/nado.toml
 
 # Run directly
-nix run . -- --config tests/nado.toml
+cd tests/e2e/backjoon-1000
+nix run /Users/nyeong/Repos/nado
+
+# Optional explicit config path (first arg)
+nado ./nado.toml
 ```
 
 ## Config example
 
-See: `tests/nado.toml`
+See: `tests/e2e/backjoon-1000/nado.toml`
+
+## Planning docs
+
+- `TODO.md`
+- `docs/boj-problem-survey.md`
