@@ -3,16 +3,19 @@ use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use rayon::prelude::*;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::config::{Config, Limits, Normalize};
 use crate::generator::{generate_inputs, parse_problem_inputs};
 use crate::runner::run_program;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Failure {
     case_index: usize,
     input: String,
+    candidate_index: Option<usize>,
     candidate_name: String,
     reason: String,
     origin_stdout: String,
@@ -51,6 +54,17 @@ pub fn run(config_path: &Path) -> Result<i32> {
         .num_threads(config.engine.workers)
         .build()
         .context("failed to build worker pool")?;
+    let candidate_names = config
+        .candidate
+        .iter()
+        .enumerate()
+        .map(|(idx, candidate)| {
+            candidate
+                .name
+                .clone()
+                .unwrap_or_else(|| format!("candidate-{}", idx + 1))
+        })
+        .collect::<Vec<_>>();
 
     println!(
         "nado: cases={}, candidates={}, workers={}, timeout={}ms",
@@ -60,53 +74,30 @@ pub fn run(config_path: &Path) -> Result<i32> {
         config.engine.timeout_ms
     );
     let progress = build_progress_bar(generated_inputs.len());
-
-    if config.engine.stop_on_first_fail {
-        let progress = progress.clone();
-        let failure = pool.install(|| {
-            generated_inputs
-                .par_iter()
-                .enumerate()
-                .find_map_any(|(idx, input)| {
-                    let result = run_case_or_failure(
-                        idx,
-                        input,
-                        &config,
-                        &config_dir,
-                        &config.normalize,
-                        &config.limits,
-                        config.engine.timeout_ms,
-                    );
-                    progress.inc(1);
-                    result
-                })
-        });
-
-        if let Some(failure) = failure {
-            progress.finish_and_clear();
-            print_failure(&failure);
-            return Ok(1);
-        }
-
-        progress.finish_and_clear();
-        println!("PASS: no mismatches found");
-        return Ok(0);
-    }
+    let failed_candidates = config.engine.stop_on_first_fail.then(|| {
+        Arc::new(
+            (0..config.candidate.len())
+                .map(|_| AtomicBool::new(false))
+                .collect::<Vec<_>>(),
+        )
+    });
 
     let progress = progress.clone();
     let mut failures = pool.install(|| {
         generated_inputs
             .par_iter()
             .enumerate()
-            .filter_map(|(idx, input)| {
+            .flat_map_iter(|(idx, input)| {
                 let result = run_case_or_failure(
                     idx,
                     input,
                     &config,
                     &config_dir,
+                    &candidate_names,
                     &config.normalize,
                     &config.limits,
                     config.engine.timeout_ms,
+                    failed_candidates.as_ref().map(|flags| flags.as_slice()),
                 );
                 progress.inc(1);
                 result
@@ -115,14 +106,51 @@ pub fn run(config_path: &Path) -> Result<i32> {
     });
 
     progress.finish_and_clear();
-    failures.sort_by_key(|f| f.case_index);
-    if failures.is_empty() {
-        println!("PASS: no mismatches found");
+    failures.sort_by_key(|f| (f.case_index, f.candidate_index.unwrap_or(usize::MAX)));
+
+    let mut infra_failures = Vec::new();
+    let mut candidate_failures = vec![Vec::new(); config.candidate.len()];
+    for failure in failures {
+        if let Some(candidate_idx) = failure.candidate_index {
+            if config.engine.stop_on_first_fail && !candidate_failures[candidate_idx].is_empty() {
+                continue;
+            }
+            candidate_failures[candidate_idx].push(failure);
+        } else {
+            infra_failures.push(failure);
+        }
+    }
+
+    let failed_count = candidate_failures
+        .iter()
+        .filter(|per_candidate| !per_candidate.is_empty())
+        .count();
+    let has_infra_failure = !infra_failures.is_empty();
+
+    if failed_count == 0 && !has_infra_failure {
+        println!("PASS: all candidates matched origin");
+        print_candidate_summary(&candidate_names, &candidate_failures, false);
         return Ok(0);
     }
 
-    println!("FAIL: {} mismatch(es)", failures.len());
-    print_failure(&failures[0]);
+    println!(
+        "FAIL: {} / {} candidate(s) failed",
+        failed_count,
+        candidate_names.len()
+    );
+    print_candidate_summary(&candidate_names, &candidate_failures, has_infra_failure);
+
+    if let Some(first_infra) = infra_failures.first() {
+        println!();
+        println!("origin/engine failure (candidate verdict may be incomplete):");
+        print_failure(first_infra);
+    }
+
+    for per_candidate in candidate_failures.iter().filter(|f| !f.is_empty()) {
+        println!();
+        print_failure(&per_candidate[0]);
+    }
+
     Ok(1)
 }
 
@@ -131,20 +159,31 @@ fn run_case_or_failure(
     input: &str,
     config: &Config,
     config_dir: &Path,
+    candidate_names: &[String],
     normalize: &Normalize,
     limits: &Limits,
     timeout_ms: u64,
-) -> Option<Failure> {
+    failed_candidates: Option<&[AtomicBool]>,
+) -> Vec<Failure> {
     run_case(
-        idx, input, config, config_dir, normalize, limits, timeout_ms,
+        idx,
+        input,
+        config,
+        config_dir,
+        candidate_names,
+        normalize,
+        limits,
+        timeout_ms,
+        failed_candidates,
     )
-    .unwrap_or_else(|e| Some(engine_failure(idx, input, &e)))
+    .unwrap_or_else(|e| vec![engine_failure(idx, input, &e)])
 }
 
 fn engine_failure(idx: usize, input: &str, error: &anyhow::Error) -> Failure {
     Failure {
         case_index: idx,
         input: input.to_string(),
+        candidate_index: None,
         candidate_name: "engine".to_string(),
         reason: format!("runner error: {error:#}"),
         origin_stdout: String::new(),
@@ -159,94 +198,123 @@ fn run_case(
     input: &str,
     config: &Config,
     config_dir: &Path,
+    candidate_names: &[String],
     normalize: &Normalize,
     limits: &Limits,
     timeout_ms: u64,
-) -> Result<Option<Failure>> {
+    failed_candidates: Option<&[AtomicBool]>,
+) -> Result<Vec<Failure>> {
     let origin_timeout_ms = config.origin.timeout_ms.unwrap_or(timeout_ms);
     let origin = run_program(&config.origin, input, config_dir, origin_timeout_ms, limits)
         .context("origin execution failed")?;
 
     if origin.timed_out {
-        return Ok(Some(Failure {
+        return Ok(vec![Failure {
             case_index: idx,
             input: input.to_string(),
+            candidate_index: None,
             candidate_name: "origin".to_string(),
             reason: "origin timed out".to_string(),
             origin_stdout: origin.stdout,
             candidate_stdout: String::new(),
             origin_stderr: origin.stderr,
             candidate_stderr: String::new(),
-        }));
+        }]);
     }
 
     if !origin.status.success() {
-        return Ok(Some(Failure {
+        return Ok(vec![Failure {
             case_index: idx,
             input: input.to_string(),
+            candidate_index: None,
             candidate_name: "origin".to_string(),
             reason: format!("origin exited with {}", origin.status),
             origin_stdout: origin.stdout,
             candidate_stdout: String::new(),
             origin_stderr: origin.stderr,
             candidate_stderr: String::new(),
-        }));
+        }]);
     }
 
     let expected = normalize_output(&origin.stdout, normalize);
+    let mut failures = Vec::new();
 
     for (candidate_idx, candidate) in config.candidate.iter().enumerate() {
-        let candidate_timeout_ms = candidate.timeout_ms.unwrap_or(timeout_ms);
-        let got = run_program(candidate, input, config_dir, candidate_timeout_ms, limits)
-            .with_context(|| format!("candidate {} execution failed", candidate_idx + 1))?;
+        if should_skip_candidate(failed_candidates, candidate_idx) {
+            continue;
+        }
 
-        let candidate_name = candidate
-            .name
-            .clone()
-            .unwrap_or_else(|| format!("candidate-{}", candidate_idx + 1));
+        let candidate_timeout_ms = candidate.timeout_ms.unwrap_or(timeout_ms);
+        let candidate_name = candidate_names[candidate_idx].clone();
+        let got = match run_program(candidate, input, config_dir, candidate_timeout_ms, limits) {
+            Ok(output) => output,
+            Err(error) => {
+                failures.push(Failure {
+                    case_index: idx,
+                    input: input.to_string(),
+                    candidate_index: Some(candidate_idx),
+                    candidate_name,
+                    reason: format!("candidate runner error: {error:#}"),
+                    origin_stdout: origin.stdout.clone(),
+                    candidate_stdout: String::new(),
+                    origin_stderr: origin.stderr.clone(),
+                    candidate_stderr: String::new(),
+                });
+                mark_candidate_failed(failed_candidates, candidate_idx);
+                continue;
+            }
+        };
 
         if got.timed_out {
-            return Ok(Some(Failure {
+            failures.push(Failure {
                 case_index: idx,
                 input: input.to_string(),
+                candidate_index: Some(candidate_idx),
                 candidate_name,
                 reason: "candidate timed out".to_string(),
                 origin_stdout: origin.stdout.clone(),
                 candidate_stdout: got.stdout,
                 origin_stderr: origin.stderr.clone(),
                 candidate_stderr: got.stderr,
-            }));
+            });
+            mark_candidate_failed(failed_candidates, candidate_idx);
+            continue;
         }
 
         if !got.status.success() {
-            return Ok(Some(Failure {
+            failures.push(Failure {
                 case_index: idx,
                 input: input.to_string(),
+                candidate_index: Some(candidate_idx),
                 candidate_name,
                 reason: format!("candidate exited with {}", got.status),
                 origin_stdout: origin.stdout.clone(),
                 candidate_stdout: got.stdout,
                 origin_stderr: origin.stderr.clone(),
                 candidate_stderr: got.stderr,
-            }));
+            });
+            mark_candidate_failed(failed_candidates, candidate_idx);
+            continue;
         }
 
         let actual = normalize_output(&got.stdout, normalize);
         if expected != actual {
-            return Ok(Some(Failure {
+            failures.push(Failure {
                 case_index: idx,
                 input: input.to_string(),
+                candidate_index: Some(candidate_idx),
                 candidate_name,
                 reason: "output mismatch".to_string(),
                 origin_stdout: origin.stdout.clone(),
                 candidate_stdout: got.stdout,
                 origin_stderr: origin.stderr.clone(),
                 candidate_stderr: got.stderr,
-            }));
+            });
+            mark_candidate_failed(failed_candidates, candidate_idx);
         }
     }
 
-    Ok(None)
+    Ok(failures)
 }
 
 fn normalize_output(output: &str, normalize: &Normalize) -> String {
@@ -280,6 +348,40 @@ fn print_failure(failure: &Failure) {
     }
     if !failure.candidate_stderr.trim().is_empty() {
         println!("candidate stderr:\n{}", failure.candidate_stderr.trim_end());
+    }
+}
+
+fn should_skip_candidate(failed_candidates: Option<&[AtomicBool]>, candidate_idx: usize) -> bool {
+    let Some(failed_candidates) = failed_candidates else {
+        return false;
+    };
+    failed_candidates[candidate_idx].load(Ordering::Relaxed)
+}
+
+fn mark_candidate_failed(failed_candidates: Option<&[AtomicBool]>, candidate_idx: usize) {
+    if let Some(failed_candidates) = failed_candidates {
+        failed_candidates[candidate_idx].store(true, Ordering::Relaxed);
+    }
+}
+
+fn print_candidate_summary(
+    candidate_names: &[String],
+    candidate_failures: &[Vec<Failure>],
+    has_infra_failure: bool,
+) {
+    println!("candidate summary:");
+    for (idx, candidate_name) in candidate_names.iter().enumerate() {
+        let failure_count = candidate_failures[idx].len();
+        if failure_count > 0 {
+            println!(
+                "- {}: FAIL ({} mismatch(es))",
+                candidate_name, failure_count
+            );
+        } else if has_infra_failure {
+            println!("- {}: UNKNOWN (origin/engine failure)", candidate_name);
+        } else {
+            println!("- {}: PASS", candidate_name);
+        }
     }
 }
 

@@ -30,6 +30,16 @@
 - [ ] Add 10 additional researched fixtures from `docs/boj-problem-survey.md`
 - [ ] Add "known wrong candidate" for each fixture to verify mismatch reporting
 
+## P1 - Performance
+
+- [ ] Small-domain exhaustive mode (auto-switch from random when cardinality is small)
+- [ ] Deduplicate generated inputs before execution
+- [ ] Memoize origin outputs by input key
+- [ ] Tiered execution budget (edge/partition first, random batches later)
+- [ ] Candidate runtime budget controls (`max_failures`, per-candidate time budget)
+- [ ] Split local and docker worker pools (`workers_local`, `workers_docker`)
+- [ ] Warm runner protocol (persistent local/docker process) for spawn/cold-start reduction
+
 ## P2 - UX & Config
 
 - [ ] Validate TOML schema with human-readable diagnostics

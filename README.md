@@ -12,7 +12,7 @@ Useful when you want to solve a problem in a language not supported by the judge
 - Run `origin` and all `candidate` programs locally by default
 - Run a program in Docker when `image` is set
 - Compare normalized stdout outputs
-- Fail fast with reproducible counterexample (`seed`)
+- Candidate-wise verdicts (one candidate failure does not stop others)
 - Enforce timeout + `rlimit` per local process
 - Generate inputs with hybrid strategy:
   - boundary seeds
