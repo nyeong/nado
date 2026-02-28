@@ -1,6 +1,9 @@
 use anyhow::{bail, Context, Result};
+use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use rayon::prelude::*;
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use crate::config::{Config, Limits, Normalize};
 use crate::generator::{generate_inputs, parse_problem_inputs};
@@ -56,14 +59,16 @@ pub fn run(config_path: &Path) -> Result<i32> {
         config.engine.workers,
         config.engine.timeout_ms
     );
+    let progress = build_progress_bar(generated_inputs.len());
 
     if config.engine.stop_on_first_fail {
+        let progress = progress.clone();
         let failure = pool.install(|| {
             generated_inputs
                 .par_iter()
                 .enumerate()
                 .find_map_any(|(idx, input)| {
-                    run_case_or_failure(
+                    let result = run_case_or_failure(
                         idx,
                         input,
                         &config,
@@ -71,25 +76,30 @@ pub fn run(config_path: &Path) -> Result<i32> {
                         &config.normalize,
                         &config.limits,
                         config.engine.timeout_ms,
-                    )
+                    );
+                    progress.inc(1);
+                    result
                 })
         });
 
         if let Some(failure) = failure {
+            progress.finish_and_clear();
             print_failure(&failure);
             return Ok(1);
         }
 
+        progress.finish_and_clear();
         println!("PASS: no mismatches found");
         return Ok(0);
     }
 
+    let progress = progress.clone();
     let mut failures = pool.install(|| {
         generated_inputs
             .par_iter()
             .enumerate()
             .filter_map(|(idx, input)| {
-                run_case_or_failure(
+                let result = run_case_or_failure(
                     idx,
                     input,
                     &config,
@@ -97,11 +107,14 @@ pub fn run(config_path: &Path) -> Result<i32> {
                     &config.normalize,
                     &config.limits,
                     config.engine.timeout_ms,
-                )
+                );
+                progress.inc(1);
+                result
             })
             .collect::<Vec<_>>()
     });
 
+    progress.finish_and_clear();
     failures.sort_by_key(|f| f.case_index);
     if failures.is_empty() {
         println!("PASS: no mismatches found");
@@ -268,4 +281,22 @@ fn print_failure(failure: &Failure) {
     if !failure.candidate_stderr.trim().is_empty() {
         println!("candidate stderr:\n{}", failure.candidate_stderr.trim_end());
     }
+}
+
+fn build_progress_bar(total: usize) -> ProgressBar {
+    let progress = ProgressBar::new(total as u64);
+
+    let style = ProgressStyle::with_template(
+        "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({percent}%)",
+    )
+    .unwrap_or_else(|_| ProgressStyle::default_bar())
+    .progress_chars("=>-");
+    progress.set_style(style);
+    progress.enable_steady_tick(Duration::from_millis(100));
+
+    if !std::io::stdout().is_terminal() {
+        progress.set_draw_target(ProgressDrawTarget::hidden());
+    }
+
+    progress
 }
